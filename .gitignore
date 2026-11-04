@@ -1,0 +1,5 @@
+# Claves, cachés y ajustes de este ordenador: nunca se suben
+data/
+node_modules/
+.claude/
+*.zip

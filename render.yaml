@@ -1,0 +1,25 @@
+# Despliegue en Render (plan gratuito). Render lee este archivo al crear el servicio («New › Blueprint»)
+# y pide los valores secretos: la contraseña de acceso y las claves de The Odds API y PulseScore.
+services:
+  - type: web
+    name: cuotaradar
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: echo "Sin dependencias que instalar"
+    startCommand: node server.js
+    healthCheckPath: /api/version
+    envVars:
+      - key: APP_PASSWORD
+        sync: false
+      - key: ODDS_API_KEY
+        sync: false
+      - key: PULSESCORE_KEY
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TZ
+        value: Europe/Madrid
+      # En la nube la caché se borra al dormirse el servicio: tope bajo para no gastar créditos de más
+      - key: MAX_CREDITS_PER_SEARCH
+        value: "20"

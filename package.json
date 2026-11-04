@@ -1,0 +1,14 @@
+{
+  "name": "cuotaradar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Errores de cuota a favor del usuario en fútbol y voleibol",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
