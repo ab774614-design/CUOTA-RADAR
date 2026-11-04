@@ -257,6 +257,16 @@
     const rest = round2(budget - combos.reduce((a, c) => a + c.stake, 0));
     const singles = full ? allocateFull(usable, rest, P, step, minStake) : allocatePrudent(usable, rest, P, step, minStake);
     const bets = [...singles, ...combos];
+    // Con pocos partidos puede no quedar ninguno para apuestas sueltas: el dinero sobrante va a las combinadas
+    let fewMatches = false;
+    if (full && combos.length) {
+      const left = floorTo(budget - bets.reduce((a, b) => a + b.stake, 0), step);
+      if (left >= step && !singles.length) {
+        const shares = roundToTotal(combos.map((c) => (left * c.stake) / combos.reduce((a, x) => a + x.stake, 0)), left, step);
+        combos.forEach((c, i) => { c.stake = round2(c.stake + shares[i]); });
+        fewMatches = true;
+      }
+    }
 
     const warnings = [];
     if (!bets.length) warnings.push('Ahora mismo no hay ninguna apuesta con valor que encaje con este perfil.');
@@ -267,6 +277,7 @@
     if (negative.length) {
       warnings.push(`${negative.length} apuesta${negative.length > 1 ? 's tienen' : ' tiene'} EV negativo: la cuota paga algo menos de lo justo, así que a la larga se pierde de media. Entran porque has pedido apostar aunque el EV sea bajo.`);
     }
+    if (fewMatches) warnings.push('Hay pocos partidos disponibles: no quedan para apuestas sueltas, así que todo el presupuesto va a las combinadas (más riesgo).');
     if (full && bets.length === 1 && bets[0].kind === 'simple') {
       warnings.push('Todo el presupuesto va a una sola apuesta: si falla, lo pierdes entero.');
     }

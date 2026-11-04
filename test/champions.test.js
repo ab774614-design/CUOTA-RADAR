@@ -44,6 +44,35 @@ test('bet365: córners, tarjetas, disparos a puerta, hándicap europeo y descans
   assert.equal(A.selectionLabel('Más 2.5', { home: 'RB Leipzig', away: 'Man City' }, 'cards:2.5'), 'Más 2.5 tarjetas');
 });
 
+test('OddsPapi: traduce mercados y une bet365 y Pinnacle por el mismo partido', () => {
+  const { normalizeOddsPapi } = require('../lib/oddspapi');
+  const markets = {
+    101: { type: '1x2', period: 'fulltime', handicap: 0, outcomes: { 101: '1', 102: 'X', 103: '2' } },
+    10803: { type: 'totals-corners', period: 'fulltime', handicap: 9.5, outcomes: { 10803: 'Over', 10804: 'Under' } },
+    10801: { type: 'totals-corners', period: 'fulltime', handicap: 9, outcomes: { 10801: 'Over', 10802: 'Under' } },
+    10922: { type: 'totals-bookings', period: 'fulltime', handicap: 2.5, outcomes: { 10922: 'Over', 10923: 'Under' } },
+    1084: { type: 'spreads', period: 'fulltime', handicap: 1.5, outcomes: { 1084: '1', 1085: '2' } },
+    101902: { type: 'doublechance', period: 'fulltime', handicap: 0, outcomes: { 101900: '1X', 101901: '12', 101902: '2X' } },
+  };
+  const odds = (ids) => ({ markets: Object.fromEntries(Object.entries(ids).map(([mid, outs]) => [mid, { outcomes: Object.fromEntries(Object.entries(outs).map(([oid, price]) => [oid, { players: { 0: { active: true, price } } }])) }])) });
+  const fx = (bk, ids) => [{ fixtureId: 'id1', participant1Id: 1, participant2Id: 2, tournamentId: 7, statusId: 0, startTime: '2026-11-04T20:00:00Z', bookmakerOdds: { [bk]: odds(ids) } }];
+  const evs = normalizeOddsPapi([
+    { bookmaker: 'bet365', data: fx('bet365', { 101: { 101: 2.2, 102: 3.4, 103: 3.2 }, 10803: { 10803: 2.62, 10804: 1.44 }, 10801: { 10801: 2, 10802: 1.7 }, 101902: { 101900: 1.3, 101901: 1.35, 101902: 1.6 } }) },
+    { bookmaker: 'pinnacle', data: fx('pinnacle', { 101: { 101: 2.3, 102: 3.5, 103: 3.3 }, 10922: { 10922: 1.48, 10923: 2.6 }, 1084: { 1084: 2.41, 1085: 1.588 } }) },
+  ], markets, { 1: 'Celta', 2: 'Levante' }, { 7: { key: 'fav_ucl', name: 'Champions League' } });
+  assert.equal(evs.length, 1);
+  const [e] = evs;
+  assert.equal(e.home, 'Celta');
+  assert.deepEqual(e.books.map((b) => b.key), ['bet365', 'pinnacle']);
+  const b = e.books[0].markets, p = e.books[1].markets;
+  assert.deepEqual(b.h2h.outcomes, { '1': 2.2, X: 3.4, '2': 3.2 });
+  assert.deepEqual(b['corners:9.5'].outcomes, { 'Más 9.5': 2.62, 'Menos 9.5': 1.44 });
+  assert.ok(!b['corners:9']); // línea entera (con devolución) fuera
+  assert.deepEqual(b.dc.outcomes, { '1X': 1.3, '12': 1.35, X2: 1.6 });
+  assert.deepEqual(p['cards:2.5'].outcomes, { 'Más 2.5': 1.48, 'Menos 2.5': 2.6 });
+  assert.deepEqual(p['spreads:1.5'].outcomes, { '1': 2.41, '2': 1.588 });
+});
+
 test('PS3838: se presenta como Pinnacle y solo con medias líneas', () => {
   const e = normalizePs3838({
     eventId: 1, league: 'UEFA - Champions League', home: 'RB Leipzig', away: 'Manchester City', startTime: '2026-11-04T20:00:00Z',

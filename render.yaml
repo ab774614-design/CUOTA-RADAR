@@ -16,6 +16,8 @@ services:
         sync: false
       - key: PULSESCORE_KEY
         sync: false
+      - key: ODDSPAPI_KEY
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: TZ

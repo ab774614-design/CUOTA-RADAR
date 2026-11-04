@@ -23,7 +23,7 @@ const madridDay = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeri
 const isToday = (iso) => madridDay.format(new Date(iso)) === madridDay.format(new Date());
 const todayOnly = () => state.prefs.todayOnly !== false;
 // Con PulseScore en modo real, la Champions y LaLiga se buscan siempre aunque no haya ligas marcadas.
-const alwaysOn = () => state.config && state.config.mode === 'real' && state.config.hasPsKey;
+const alwaysOn = () => state.config && state.config.mode === 'real' && (state.config.hasPsKey || state.config.hasOpKey);
 const inDay = (o) => !todayOnly() || isToday(o.commence);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -139,7 +139,7 @@ async function doScan() {
       if (!state.plan && state.prefs.budget) buildPlan();
       setLive('ok', `actualizado ${fmtClock.format(new Date(data.at))}`);
       showErrors(data.errors);
-      if (data.psUsage) updatePsPill(data.psUsage);
+      updatePsPill(data.opUsage ? { op: data.opUsage } : data.psUsage);
       if (data.credits && data.credits.remaining !== null) {
         $('#credits').textContent = `${data.credits.remaining} créditos`;
         $('#credits').classList.remove('hidden');
@@ -192,7 +192,7 @@ async function manualScan() {
 function updatePsPill(u) {
   const p = $('#psPill');
   if (!u || state.config.mode !== 'real') { p.classList.add('hidden'); return; }
-  p.textContent = `bet365: ${u.used}/${u.total} peticiones este mes`;
+  p.textContent = u.op ? `OddsPapi: ${u.op.used ?? '?'}/${u.op.limit ?? 250} peticiones este mes` : `bet365: ${u.used}/${u.total} peticiones este mes`;
   p.classList.remove('hidden');
 }
 
@@ -493,7 +493,7 @@ async function saveBudget(e) {
 }
 
 // Por defecto, con clave de PulseScore los planes solo usan bet365.
-const onlyB365 = () => (state.prefs.onlyB365 == null ? !!state.config.hasPsKey : state.prefs.onlyB365);
+const onlyB365 = () => (state.prefs.onlyB365 == null ? !!(state.config.hasPsKey || state.config.hasOpKey) : state.prefs.onlyB365);
 const isB365 = (o) => (o.legs ? o.legs.every((l) => l.book === 'bet365') : o.book === 'bet365');
 
 // EV mínimo de las apuestas del plan (por defecto −3 %: apostar aunque el EV sea bajo).
@@ -959,8 +959,10 @@ function openSettings() {
   }
   f.apiKey.value = '';
   f.psKey.value = '';
+  f.opKey.value = '';
   showKeyState();
   showPsState();
+  showOpState();
   f.dataset.mode = c.mode;
   markSeg('#modeSeg', c.mode);
   $('#settings').showModal();
@@ -974,6 +976,16 @@ function showKeyState(msg, cls) {
   if (!c.hasKey) el.innerHTML = '<span class="lvl-media">Aún no hay ninguna clave guardada.</span>';
   else if (c.keyIssue) el.innerHTML = `<span class="neg">⚠️ La clave guardada (${esc(c.keyMasked)}) no es válida: ${esc(c.keyIssue)}</span>`;
   else el.innerHTML = `<span class="pos">✅ Clave guardada y comprobada (${esc(c.keyMasked)})${c.credits && c.credits.remaining !== null ? ` · ${c.credits.remaining} créditos` : ''}. Se conserva siempre; deja la casilla vacía para seguir usándola.</span>`;
+}
+
+function showOpState(msg, cls) {
+  const c = state.config;
+  const el = $('#opState');
+  if (msg) { el.innerHTML = `<span class="${cls}">${esc(msg)}</span>`; return; }
+  const u = c.opUsage;
+  el.innerHTML = c.hasOpKey
+    ? `<span class="pos">✅ Clave de OddsPapi guardada y comprobada (${esc(c.opKeyMasked)})${u && u.limit ? ` · ${u.used ?? '?'} de ${u.limit} peticiones usadas este mes` : ''}. Se conserva siempre.</span>`
+    : '<span class="lvl-media">Aún no hay clave de OddsPapi.</span>';
 }
 
 function showPsState(msg, cls) {
@@ -1000,7 +1012,7 @@ async function saveSettings(e) {
   const body = { mode: f.dataset.mode };
   for (const el of f.elements) {
     if (!el.name) continue;
-    if (el.name === 'apiKey' || el.name === 'psKey') { if (el.value.trim()) body[el.name] = el.value.trim(); continue; }
+    if (el.name === 'apiKey' || el.name === 'psKey' || el.name === 'opKey') { if (el.value.trim()) body[el.name] = el.value.trim(); continue; }
     body[el.name] = el.dataset.pct !== undefined ? Number(el.value) / 100 : el.value;
   }
   if (body.mode === 'real' && !body.apiKey && (!state.config.hasKey || state.config.keyIssue)) {
@@ -1013,11 +1025,13 @@ async function saveSettings(e) {
   btn.disabled = true;
   if (body.apiKey) showKeyState('Comprobando la clave con The Odds API…', 'sub');
   if (body.psKey) showPsState('Comprobando la clave con PulseScore…', 'sub');
+  if (body.opKey) showOpState('Comprobando la clave con OddsPapi (gratis)…', 'sub');
   try {
     state.config = await api('/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   } catch (err) {
     // La clave anterior sigue guardada; se explica el problema junto a la casilla correspondiente.
-    if (/PulseScore/.test(err.message)) { showPsState(err.message, 'neg'); f.psKey.focus(); }
+    if (/OddsPapi/.test(err.message)) { showOpState(err.message, 'neg'); f.opKey.focus(); }
+    else if (/PulseScore/.test(err.message)) { showPsState(err.message, 'neg'); f.psKey.focus(); }
     else { showKeyState(err.message, 'neg'); f.apiKey.focus(); }
     return;
   } finally {
@@ -1029,7 +1043,7 @@ async function saveSettings(e) {
   if (modeChanged || body.apiKey) await loadSports();
   if (!modeChanged && state.config.mode === 'real') {
     // En modo real no se vuelve a buscar solo (gastaría créditos): se mantiene lo que había.
-    toast(body.psKey ? '✅ Clave de PulseScore correcta y guardada' : body.apiKey ? '✅ Clave correcta y guardada' : 'Ajustes guardados');
+    toast(body.opKey ? '✅ Clave de OddsPapi correcta y guardada' : body.psKey ? '✅ Clave de PulseScore correcta y guardada' : body.apiKey ? '✅ Clave correcta y guardada' : 'Ajustes guardados');
     updateEstimate();
     render();
     return;
@@ -1037,7 +1051,7 @@ async function saveSettings(e) {
   state.scan = null;
   state.firstSeen.clear();
   state.seen.clear();
-  toast(body.psKey ? '✅ Clave de PulseScore correcta y guardada' : body.apiKey ? '✅ Clave correcta y guardada' : 'Ajustes guardados');
+  toast(body.opKey ? '✅ Clave de OddsPapi correcta y guardada' : body.psKey ? '✅ Clave de PulseScore correcta y guardada' : body.apiKey ? '✅ Clave correcta y guardada' : 'Ajustes guardados');
   runScan();
 }
 
@@ -1047,7 +1061,7 @@ function applyMode() {
   pill.textContent = real ? 'REAL' : 'DEMO';
   pill.className = `pill ${real ? 'real' : 'demo'}`;
   $('#demoBanner').classList.toggle('hidden', real);
-  updatePsPill(state.config.psUsage);
+  updatePsPill(state.config.hasOpKey && state.config.opUsage ? { op: state.config.opUsage } : state.config.psUsage);
   if (real && state.config.keyIssue) showErrors([`La clave de The Odds API guardada no es válida: ${state.config.keyIssue} Ábrela en ⚙ Ajustes.`]);
   $('#credits').classList.toggle('hidden', !real || !$('#credits').textContent);
 }

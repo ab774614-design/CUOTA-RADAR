@@ -9,6 +9,7 @@ const { DemoMarket } = require('./lib/demo');
 const { OddsApi, cleanKey, keyProblem } = require('./lib/oddsapi');
 const { newsFor } = require('./lib/news');
 const { PulseScore, cleanPsKey } = require('./lib/pulsescore');
+const { OddsPapi, cleanOpKey, normalizeOddsPapi } = require('./lib/oddspapi');
 const { matchEvents } = require('./lib/match');
 const { volleyModelBook } = require('./lib/b365model');
 
@@ -49,6 +50,7 @@ const saveConfig = () => fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, nu
 // que allí se borra en cada reinicio. Con clave de The Odds API la app arranca en modo real.
 if (process.env.ODDS_API_KEY) { config.apiKey = cleanKey(process.env.ODDS_API_KEY); if (!process.env.APP_MODE) config.mode = 'real'; }
 if (process.env.PULSESCORE_KEY) config.psKey = cleanPsKey(process.env.PULSESCORE_KEY);
+if (process.env.ODDSPAPI_KEY) config.opKey = cleanOpKey(process.env.ODDSPAPI_KEY);
 if (Number(process.env.MAX_CREDITS_PER_SEARCH) > 0) config.maxCreditsPerSearch = Number(process.env.MAX_CREDITS_PER_SEARCH);
 const creditCap = () => Math.max(1, Number(config.maxCreditsPerSearch) || 30);
 if (process.env.APP_MODE === 'demo' || process.env.APP_MODE === 'real') config.mode = process.env.APP_MODE;
@@ -64,13 +66,15 @@ if (!config.savingV2) {
 const demo = new DemoMarket();
 const api = new OddsApi(path.join(DATA, 'cache-odds.json'));
 const ps = new PulseScore(path.join(DATA, 'cache-pulsescore.json'));
+const op = new OddsPapi(path.join(DATA, 'cache-oddspapi.json'));
 const histories = { demo: new History(), real: new History() };
 
 function publicConfig() {
-  const { apiKey, psKey, ...rest } = config;
+  const { apiKey, psKey, opKey, ...rest } = config;
   return {
     ...rest, hasKey: !!apiKey, keyMasked: apiKey ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : '',
     hasPsKey: !!psKey, psKeyMasked: psKey ? `${psKey.slice(0, 4)}…${psKey.slice(-4)}` : '', psUsage: ps.monthUsage(),
+    hasOpKey: !!opKey, opKeyMasked: opKey ? (opKey.slice(0, 4) + '…' + opKey.slice(-4)) : '', opUsage: op.account,
     keyIssue: apiKey ? keyProblem(apiKey) : null, credits: api.credits,
     cloud: CLOUD, keysFromServer: !!(process.env.ODDS_API_KEY || process.env.PULSESCORE_KEY),
   };
@@ -94,9 +98,9 @@ async function listSports() {
     checkKey();
     const list = await api.sports(config.apiKey);
     // Con clave de PulseScore se añade el voleibol de bet365 (todas sus ligas en una sola entrada).
-    if (!config.psKey) return list;
+    if (!config.psKey && !config.opKey) return list;
     const favKeys = new Set(FAVORITES.map((f) => f.oddsKey));
-    return [...FAVORITES.map((f) => ({ key: f.key, title: f.title, sport: 'futbol', group: 'Fútbol' })), ...list.filter((s) => !favKeys.has(s.key)), B365_VOLLEY];
+    return [...FAVORITES.map((f) => ({ key: f.key, title: f.title, sport: 'futbol', group: 'Fútbol' })), ...list.filter((s) => !favKeys.has(s.key)), ...(config.psKey ? [B365_VOLLEY] : [])];
   }
   return demo.sports();
 }
@@ -137,7 +141,26 @@ const FAVORITES = [
   { key: 'fav_laliga', title: '⭐ LaLiga (siempre)', league: 'LaLiga', b365: 'Spain||Spain La Liga', ps: 'Spain - La Liga', oddsKey: 'soccer_spain_la_liga' },
 ];
 
+// Con OddsPapi: Champions (7) y LaLiga (8), bet365 y Pinnacle → 2 peticiones (caché de 30 min)
+const OP_LEAGUES = { 7: { key: 'fav_ucl', name: 'Champions League' }, 8: { key: 'fav_laliga', name: 'LaLiga' } };
+
+async function favoriteEventsOddsPapi(errors) {
+  try {
+    const ids = Object.keys(OP_LEAGUES).map(Number);
+    const [markets, participants] = [await op.markets(config.opKey), await op.participants(config.opKey, 10)];
+    const lists = [];
+    for (const bookmaker of ['bet365', 'pinnacle']) {
+      try { lists.push({ bookmaker, data: await op.oddsByTournaments(config.opKey, bookmaker, ids) }); } catch (e) { errors.push(`OddsPapi (${bookmaker}): ${e.message}`); }
+    }
+    return normalizeOddsPapi(lists, markets, participants, OP_LEAGUES);
+  } catch (e) {
+    errors.push(e.message);
+    return [];
+  }
+}
+
 async function favoriteEvents(errors) {
+  if (config.opKey) return favoriteEventsOddsPapi(errors);
   const out = [];
   for (const f of FAVORITES) {
     let b365 = [];
@@ -170,10 +193,10 @@ async function scan(sportKeys) {
     checkKey();
     const sports = await api.sports(config.apiKey);
     // La Champions y LaLiga ya llegan por PulseScore: no se piden también a The Odds API
-    const favKeys = config.psKey ? new Set(FAVORITES.map((f) => f.oddsKey)) : new Set();
+    const favKeys = config.psKey || config.opKey ? new Set(FAVORITES.map((f) => f.oddsKey)) : new Set();
     const chosen = sports.filter((s) => sportKeys.includes(s.key) && !favKeys.has(s.key)).slice(0, MAX_REAL_SPORTS);
     const noCredits = api.credits.remaining !== null && api.credits.remaining <= 1 && api.estimate(chosen.map((s) => s.key), { regions: config.regions, markets: FULL_MARKETS, ttlSec: config.ttlSec }) > 0;
-    if (noCredits && chosen.length) errors.push('The Odds API se ha quedado sin créditos este mes: solo se usan las cuotas guardadas, la Champions, LaLiga y el voleibol (PulseScore).');
+    if (noCredits && chosen.length) errors.push('The Odds API se ha quedado sin créditos este mes: solo se usan las cuotas guardadas y la Champions y LaLiga (OddsPapi).');
     // Tope por búsqueda: se buscan las ligas en orden hasta llegar al límite de créditos; el resto se salta
     let spent = 0;
     const skipped = [];
@@ -190,7 +213,7 @@ async function scan(sportKeys) {
     }
     if (skipped.length) errors.push(`Tope de ${creditCap()} créditos por búsqueda: no se han buscado ${skipped.length} liga${skipped.length > 1 ? 's' : ''} (${skipped.slice(0, 4).join(', ')}${skipped.length > 4 ? '…' : ''}). Puedes subir el tope en ⚙ Ajustes.`);
     b365Matched = await addBet365Soccer(events, errors);
-    if (config.psKey) events.push(...(await favoriteEvents(errors)));
+    if (config.psKey || config.opKey) events.push(...(await favoriteEvents(errors)));
     if (config.psKey && sportKeys.includes(B365_VOLLEY.key)) {
       try { events.push(...(await bet365Volleyball())); } catch (e) { errors.push(e.message); }
     }
@@ -200,7 +223,7 @@ async function scan(sportKeys) {
   const result = analyze(events, analysisOpts(), histories[config.mode]);
   return {
     mode: config.mode, at: Date.now(), credits: config.mode === 'real' ? api.credits : null,
-    psUsage: config.psKey ? ps.monthUsage() : null, b365Matched, errors, ...result,
+    psUsage: config.psKey ? ps.monthUsage() : null, opUsage: config.opKey ? op.account : null, b365Matched, errors, ...result,
   };
 }
 
@@ -402,6 +425,18 @@ const server = http.createServer(async (req, res) => {
           config.keyCheckedAt = Date.now();
           api.reset();
           api.credits = credits;
+        } catch (e) {
+          return send(res, 400, { error: e.message });
+        }
+      }
+      if (typeof body.opKey === 'string' && body.opKey.trim()) {
+        // Clave de OddsPapi: se comprueba con la consulta de cuenta (gratis) y, si falla, se conserva la anterior
+        const key = cleanOpKey(body.opKey);
+        if (key.length < 16) return send(res, 400, { error: `La clave de OddsPapi parece incompleta (${key.length} caracteres). Cópiala entera.` });
+        try {
+          await op.accountInfo(key);
+          config.opKey = key;
+          config.opCheckedAt = Date.now();
         } catch (e) {
           return send(res, 400, { error: e.message });
         }
